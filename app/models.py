@@ -65,9 +65,14 @@ class UiSettings(BaseModel):
     systemPrompt: str = ""
 
 
+class PowerSettings(BaseModel):
+    preventSleep: bool = False
+
+
 class AppSettings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     browser: BrowserSettings = Field(default_factory=BrowserSettings)
+    power: PowerSettings = Field(default_factory=PowerSettings)
     ui: UiSettings = Field(default_factory=UiSettings)
 
 
@@ -92,9 +97,22 @@ class Conversation(BaseModel):
     id: str
     title: str
     providerId: Optional[str] = None
+    projectId: Optional[str] = None
     effort: str = "none"
     system: str = ""
     useMemory: Optional[bool] = None
     archived: bool = False
     messages: List[ChatMessage] = []
     updatedAt: float = 0
+
+
+class Project(BaseModel):
+    id: str
+    name: str
+    path: Optional[str] = None
+    createdAt: float = 0
+
+
+class ProjectIn(BaseModel):
+    name: str
+    path: Optional[str] = None

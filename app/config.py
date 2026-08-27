@@ -9,6 +9,7 @@ PROVIDERS_FILE = os.path.join(DATA_DIR, "providers.json")
 CONVERSATIONS_FILE = os.path.join(DATA_DIR, "conversations.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
+PROJECTS_FILE = os.path.join(DATA_DIR, "projects.json")
 BROWSER_PROFILE_DIR = os.path.join(DATA_DIR, "browser", "profile")
 BROWSER_CACHE_DIR = os.path.join(DATA_DIR, "browser", "cache")
 
@@ -17,6 +18,7 @@ _lock = threading.Lock()
 DEFAULT_SETTINGS = {
     "memory": {"enabled": False},
     "browser": {"enabled": False, "ignoreCertErrors": False},
+    "power": {"preventSleep": False},
     "ui": {"lastProviderId": None, "effort": "none", "systemPrompt": ""},
 }
 
@@ -67,7 +69,7 @@ def save_conversations(convs):
 def load_settings():
     saved = _read_json(SETTINGS_FILE, {})
     merged = json.loads(json.dumps(DEFAULT_SETTINGS))
-    for section in ("memory", "browser", "ui"):
+    for section in ("memory", "browser", "power", "ui"):
         if isinstance(saved.get(section), dict):
             merged[section].update({
                 k: v for k, v in saved[section].items() if k in merged[section]
@@ -88,3 +90,15 @@ def load_memory():
 def save_memory(items):
     with _lock:
         _write_json(MEMORY_FILE, items)
+
+
+def load_projects():
+    with _lock:
+        return sorted(
+            _read_json(PROJECTS_FILE, []), key=lambda p: p.get("name", "").lower()
+        )
+
+
+def save_projects(projects):
+    with _lock:
+        _write_json(PROJECTS_FILE, projects)

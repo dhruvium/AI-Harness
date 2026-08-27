@@ -3,6 +3,10 @@ const $ = (id) => document.getElementById(id);
 const state = {
   providers: [],
   sessions: [],
+  projects: [],
+  openProjects: new Set(),
+  showOthers: false,
+  picking: false,
   current: null,
   providerId: null,
   effort: "none",
@@ -13,6 +17,7 @@ const state = {
   settings: {
     memory: { enabled: false },
     browser: { enabled: false, ignoreCertErrors: false },
+    power: { preventSleep: false },
     ui: { lastProviderId: null, effort: "none", systemPrompt: "" },
   },
   settingsSnapshot: null,
@@ -161,6 +166,7 @@ function syncSettingsUI() {
   $("memoryToggle").checked = state.settings.memory.enabled;
   $("browserToggle").checked = state.settings.browser.enabled;
   $("certToggle").checked = state.settings.browser.ignoreCertErrors;
+  $("sleepToggle").checked = state.settings.power.preventSleep;
   updateCertNote();
   updateMemoryVisibility();
 }
@@ -169,6 +175,7 @@ async function saveSettings() {
   state.settings.memory.enabled = $("memoryToggle").checked;
   state.settings.browser.enabled = $("browserToggle").checked;
   state.settings.browser.ignoreCertErrors = $("certToggle").checked;
+  state.settings.power.preventSleep = $("sleepToggle").checked;
   state.settings = await api("/api/settings", {
     method: "PUT",
     body: JSON.stringify({
@@ -177,6 +184,7 @@ async function saveSettings() {
         enabled: state.settings.browser.enabled,
         ignoreCertErrors: state.settings.browser.ignoreCertErrors,
       },
+      power: { preventSleep: state.settings.power.preventSleep },
     }),
   });
   updateCertNote();
@@ -220,42 +228,149 @@ async function loadMemoryList() {
   $("memoryCount").textContent = items.length;
 }
 
+/* ---------- Projects data ---------- */
+
+async function loadProjects() {
+  state.projects = await api("/api/projects");
+}
+
 /* ---------- Sessions ---------- */
 
 async function loadSessions() {
   state.sessions = await api("/api/conversations");
-  renderSessions();
+  renderSidebar();
 }
 
-function renderSessions() {
+function relTime(ts) {
+  if (!ts) return "";
+  const d = Date.now() / 1000 - ts;
+  if (d < 60) return "now";
+  if (d < 3600) return Math.round(d / 60) + "m";
+  if (d < 86400) return Math.round(d / 3600) + "h";
+  if (d < 86400 * 30) return Math.round(d / 86400) + "d";
+  return new Date(ts * 1000).toLocaleDateString();
+}
+
+function buildSessionRow(s, nested = false) {
+  const div = document.createElement("div");
+  div.className =
+    "session" + (nested ? " nested" : "") +
+    (state.current && state.current.id === s.id ? " active" : "");
+  const t = document.createElement("span");
+  t.className = "title";
+  t.textContent = s.title || "Untitled";
+  const time = document.createElement("span");
+  time.className = "time";
+  time.textContent = relTime(s.updatedAt);
+  const dots = document.createElement("button");
+  dots.className = "dots";
+  dots.textContent = "⋮";
+  dots.title = "Session options";
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu hidden";
+  const arch = document.createElement("button");
+  arch.textContent = "Archive";
+  arch.onclick = async (e) => {
+    e.stopPropagation();
+    closeAllMenus();
+    await api(`/api/conversations/${s.id}/archive`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived: true }),
+    });
+    if (state.current && state.current.id === s.id) {
+      state.current = null;
+      updateProjectChip();
+      renderMessages();
+    }
+    await loadSessions();
+  };
+  const del = document.createElement("button");
+  del.textContent = "Delete";
+  del.className = "danger";
+  del.onclick = async (e) => {
+    e.stopPropagation();
+    closeAllMenus();
+    if (!confirm(`Delete chat "${s.title || "Untitled"}" permanently?`)) return;
+    await api(`/api/conversations/${s.id}`, { method: "DELETE" });
+    if (state.current && state.current.id === s.id) {
+      state.current = null;
+      updateProjectChip();
+      renderMessages();
+    }
+    await loadSessions();
+  };
+  menu.append(arch, del);
+  dots.onclick = (e) => {
+    e.stopPropagation();
+    const wasOpen = !menu.classList.contains("hidden");
+    closeAllMenus();
+    if (!wasOpen) menu.classList.remove("hidden");
+  };
+  div.append(t, time, dots, menu);
+  div.onclick = () => openSession(s.id);
+  return div;
+}
+
+function renderSidebar() {
   const list = $("sessionList");
   list.innerHTML = "";
-  for (const s of state.sessions) {
-    const div = document.createElement("div");
-    div.className = "session" + (state.current && state.current.id === s.id ? " active" : "");
-    const t = document.createElement("span");
-    t.className = "title";
-    t.textContent = s.title || "Untitled";
+
+  const section = document.createElement("div");
+  section.className = "projects-head";
+  const label = document.createElement("span");
+  label.textContent = "Projects";
+  const add = document.createElement("button");
+  add.className = "proj-add";
+  add.textContent = "＋";
+  add.title = "New project (pick a folder, then name it)";
+  add.onclick = async (e) => {
+    e.stopPropagation();
+    await createProjectFlow();
+  };
+  section.append(label, add);
+  list.appendChild(section);
+
+  for (const p of state.projects) {
+    const convs = state.sessions.filter((s) => s.projectId === p.id);
+    const open = state.openProjects.has(p.id);
+    const row = document.createElement("div");
+    row.className = "project-row" + (open ? " open" : "");
+    const folder = document.createElement("span");
+    folder.className = "folder";
+    folder.textContent = open ? "📂" : "📁";
+    const nameWrap = document.createElement("div");
+    nameWrap.className = "meta-wrap";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = p.name;
+    nameWrap.appendChild(name);
+    if (p.path) {
+      const pth = document.createElement("div");
+      pth.className = "ppath";
+      pth.textContent = p.path;
+      pth.title = p.path;
+      nameWrap.appendChild(pth);
+    }
     const dots = document.createElement("button");
     dots.className = "dots";
     dots.textContent = "⋮";
-    dots.title = "Session options";
+    dots.title = "Project options";
     const menu = document.createElement("div");
     menu.className = "ctx-menu hidden";
-    const arch = document.createElement("button");
-    arch.textContent = "Archive";
-    arch.onclick = async (e) => {
+    const ren = document.createElement("button");
+    ren.textContent = "Rename";
+    ren.onclick = async (e) => {
       e.stopPropagation();
       closeAllMenus();
-      await api(`/api/conversations/${s.id}/archive`, {
-        method: "PATCH",
-        body: JSON.stringify({ archived: true }),
+      const newName = prompt("Rename project:", p.name);
+      if (!newName || !newName.trim() || newName.trim() === p.name) return;
+      await api(`/api/projects/${p.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name: newName.trim(), path: p.path || null }),
       });
-      if (state.current && state.current.id === s.id) {
-        state.current = null;
-        renderMessages();
-      }
-      await loadSessions();
+      await loadProjects();
+      updateProjectChip();
+      renderSidebar();
     };
     const del = document.createElement("button");
     del.textContent = "Delete";
@@ -263,25 +378,145 @@ function renderSessions() {
     del.onclick = async (e) => {
       e.stopPropagation();
       closeAllMenus();
-      if (!confirm(`Delete chat "${s.title || "Untitled"}" permanently?`)) return;
-      await api(`/api/conversations/${s.id}`, { method: "DELETE" });
-      if (state.current && state.current.id === s.id) {
+      const count = state.sessions.filter((s) => s.projectId === p.id).length;
+      const msg = count
+        ? `Delete project "${p.name}" and its ${count} chat(s)? This cannot be undone.`
+        : `Delete project "${p.name}"?`;
+      if (!confirm(msg)) return;
+      await api(`/api/projects/${p.id}`, { method: "DELETE" });
+      if (state.current && state.current.projectId === p.id) {
         state.current = null;
         renderMessages();
       }
+      await loadProjects();
       await loadSessions();
+      updateProjectChip();
     };
-    menu.append(arch, del);
+    menu.append(ren, del);
     dots.onclick = (e) => {
       e.stopPropagation();
       const wasOpen = !menu.classList.contains("hidden");
       closeAllMenus();
       if (!wasOpen) menu.classList.remove("hidden");
     };
-    div.append(t, dots, menu);
-    div.onclick = () => openSession(s.id);
-    list.appendChild(div);
+    const plus = document.createElement("button");
+    plus.className = "proj-add";
+    plus.textContent = "＋";
+    plus.title = "New chat in this project";
+    plus.onclick = (e) => {
+      e.stopPropagation();
+      newSession(p.id);
+    };
+    row.append(folder, nameWrap, plus, dots, menu);
+    row.onclick = () => {
+      if (state.openProjects.has(p.id)) state.openProjects.delete(p.id);
+      else state.openProjects.add(p.id);
+      renderSidebar();
+    };
+    list.appendChild(row);
+
+    if (open) {
+      const wrap = document.createElement("div");
+      wrap.className = "nested-wrap";
+      if (!convs.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty-filter";
+        empty.textContent = "No chats yet — use ＋ to start one";
+        wrap.appendChild(empty);
+      }
+      for (const s of convs) wrap.appendChild(buildSessionRow(s, true));
+      list.appendChild(wrap);
+    }
   }
+
+  const loose = state.sessions.filter((s) => !s.projectId);
+  if (loose.length) {
+    const othersHead = document.createElement("div");
+    othersHead.className = "projects-head others";
+    const olabel = document.createElement("span");
+    olabel.textContent = "Other chats";
+    const chev = document.createElement("button");
+    chev.className = "proj-add";
+    chev.textContent = state.showOthers ? "▾" : "▸";
+    othersHead.append(olabel, chev);
+    othersHead.onclick = () => {
+      state.showOthers = !state.showOthers;
+      renderSidebar();
+    };
+    list.appendChild(othersHead);
+    if (state.showOthers) {
+      const wrap = document.createElement("div");
+      wrap.className = "nested-wrap";
+      for (const s of loose) wrap.appendChild(buildSessionRow(s, true));
+      list.appendChild(wrap);
+    }
+  }
+
+  updateProjectChip();
+}
+
+async function createProjectFlow() {
+  if (state.picking) return;
+  state.picking = true;
+  let path = null;
+  try {
+    const res = await fetch("/api/pick-folder", { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || "Folder picker is not available.");
+      return;
+    }
+    path = (await res.json()).path;
+    if (!path) return;
+  } catch (err) {
+    alert(err.message);
+    return;
+  } finally {
+    state.picking = false;
+  }
+  openNameProjectModal(path);
+}
+
+function openNameProjectModal(path) {
+  const suggested = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  $("npmPath").textContent = path;
+  $("npmPath").title = path;
+  $("npmInput").value = suggested;
+  $("nameProjectModal").classList.remove("hidden");
+  $("npmInput").focus();
+  $("npmInput").select();
+}
+
+function closeNameProjectModal() {
+  $("nameProjectModal").classList.add("hidden");
+  $("npmInput").value = "";
+}
+
+async function submitNameProjectModal() {
+  const name = $("npmInput").value.trim();
+  const path = $("npmPath").textContent;
+  if (!name || !path) return;
+  const created = await api("/api/projects", {
+    method: "POST",
+    body: JSON.stringify({ name, path }),
+  });
+  closeNameProjectModal();
+  state.openProjects.add(created.id);
+  await loadProjects();
+  renderSidebar();
+}
+
+function defaultProject() {
+  if (!state.projects.length) return null;
+  return state.projects.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+}
+
+async function newChatDefault() {
+  if (!state.projects.length) {
+    await createProjectFlow();
+    return;
+  }
+  newSession(defaultProject().id);
 }
 
 function closeAllMenus() {
@@ -289,6 +524,55 @@ function closeAllMenus() {
 }
 
 document.addEventListener("click", () => closeAllMenus());
+
+/* ---------- Project chip ---------- */
+
+function updateProjectChip() {
+  const row = $("projectChipRow");
+  if (!state.current) {
+    row.classList.add("hidden");
+    return;
+  }
+  row.classList.remove("hidden");
+  const p = state.projects.find((p) => p.id === state.current.projectId);
+  $("projectChipName").textContent = p ? p.name : "No project";
+}
+
+$("projectChip").onclick = (e) => {
+  e.stopPropagation();
+  const menu = $("projectMenu");
+  const wasOpen = !menu.classList.contains("hidden");
+  closeAllMenus();
+  if (wasOpen) return;
+  menu.innerHTML = "";
+  const none = document.createElement("button");
+  none.textContent = "No project";
+  none.onclick = async () => {
+    closeAllMenus();
+    if (state.current.projectId == null) return;
+    state.current.projectId = null;
+    await persistSession();
+    updateProjectChip();
+    renderSidebar();
+  };
+  menu.appendChild(none);
+  for (const p of state.projects) {
+    const b = document.createElement("button");
+    b.textContent = p.name;
+    if (state.current.projectId === p.id) b.classList.add("current");
+    b.onclick = async () => {
+      closeAllMenus();
+      if (state.current.projectId === p.id) return;
+      state.current.projectId = p.id;
+      state.openProjects.add(p.id);
+      await persistSession();
+      updateProjectChip();
+      renderSidebar();
+    };
+    menu.appendChild(b);
+  }
+  menu.classList.remove("hidden");
+};
 
 /* ---------- Archived chats ---------- */
 
@@ -346,8 +630,9 @@ async function openSession(id) {
   if (state.current.providerId && state.providers.find((p) => p.id === state.current.providerId)) {
     state.providerId = state.current.providerId;
   }
+  if (state.current.projectId) state.openProjects.add(state.current.projectId);
   renderProviderSelect();
-  renderSessions();
+  renderSidebar();
   renderMessages();
   persistUi();
 }
@@ -371,19 +656,21 @@ async function persistSession() {
   await loadSessions();
 }
 
-function newSession() {
+function newSession(projectId = null) {
   state.current = {
     id: crypto.randomUUID().replace(/-/g, "").slice(0, 12),
     title: "",
     providerId: state.providerId,
+    projectId: projectId,
     effort: state.effort,
     system: state.system,
     useMemory: !!state.settings.memory.enabled,
     messages: [],
     updatedAt: 0,
   };
+  if (projectId) state.openProjects.add(projectId);
   renderMessages();
-  renderSessions();
+  renderSidebar();
   $("input").focus();
 }
 
@@ -393,7 +680,7 @@ function renderMessages() {
   const box = $("messages");
   box.innerHTML = "";
   if (!state.current) {
-    box.innerHTML = `<div class="empty"><h2>Personal AI Harness</h2><p>Configure a model under Settings → Providers, then start chatting. Shift+Enter for newline.</p></div>`;
+    box.innerHTML = `<div class="empty"><h2>Personal AI Harness</h2><p>Hit <b>＋ New chat</b> to start in your default project, or pick a project in the sidebar. No projects yet? The button will walk you through creating one.</p></div>`;
     return;
   }
   for (const m of state.current.messages) {
@@ -556,6 +843,10 @@ async function send() {
   if (state.streaming) return;
   const parts = buildMessageParts();
   if (!parts.length) return;
+  if (!state.current) {
+    alert("No chat is open. Use ＋ New chat (top of sidebar) or pick a chat inside one of your projects.");
+    return;
+  }
   const provider = currentProvider();
   if (!provider) {
     openSettings("providers");
@@ -756,9 +1047,17 @@ $("systemPrompt").addEventListener("input", (e) => {
   persistUi();
 });
 
-$("newSessionBtn").onclick = newSession;
+$("newChatBtn").onclick = newChatDefault;
 $("archivedBtn").onclick = openArchived;
 $("closeArchivedBtn").onclick = () => $("archivedModal").classList.add("hidden");
+
+$("npmCloseBtn").onclick = closeNameProjectModal;
+$("npmCancelBtn").onclick = closeNameProjectModal;
+$("npmSaveBtn").onclick = submitNameProjectModal;
+$("npmInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitNameProjectModal();
+  if (e.key === "Escape") closeNameProjectModal();
+});
 
 $("providerForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -877,11 +1176,13 @@ $("clearMemoriesBtn").onclick = async () => {
   $("systemPrompt").value = state.system;
 
   await loadProviders();
+  await loadProjects();
   await loadSessions();
 
   if (state.sessions.length) {
     await openSession(state.sessions[0].id);
   } else {
+    renderSidebar();
     renderMessages();
   }
   updateContextMeter();

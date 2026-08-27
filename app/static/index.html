@@ -12,7 +12,7 @@
     <div class="side-head">
       <h1>Harness</h1>
       <div class="side-actions">
-        <button id="newSessionBtn" class="btn primary small">＋ New session</button>
+        <button id="newChatBtn" class="btn primary small">＋ New chat</button>
         <button id="archivedBtn" class="btn ghost small">Archived</button>
       </div>
     </div>
@@ -46,6 +46,15 @@
     </div>
 
     <div id="messages"></div>
+
+    <div id="projectChipRow" class="hidden">
+      <button id="projectChip" class="chip-btn">
+        <span class="folder">📁</span>
+        <span id="projectChipName"></span>
+        <span class="caret">▾</span>
+      </button>
+      <div id="projectMenu" class="ctx-menu hidden"></div>
+    </div>
 
     <div id="attachTray" class="hidden"></div>
 
@@ -102,6 +111,15 @@
           <button id="clearCacheBtn" class="btn ghost small">Clear built-in browser cache</button>
           <button id="clearBrowserDataBtn" class="btn ghost small danger">Clear all browser data</button>
         </div>
+        <hr>
+        <h3>Power</h3>
+        <label class="switch-row">
+          <div class="switch-text">
+            <div class="switch-title">Prevent sleep</div>
+            <div class="switch-desc">Keeps the computer awake while the harness is running, so long tasks are not postponed by system sleep during inactivity.</div>
+          </div>
+          <input type="checkbox" id="sleepToggle" class="switch">
+        </label>
       </section>
 
       <section id="providersTab" class="hidden">
@@ -139,6 +157,25 @@
       <button id="closeArchivedBtn" class="btn ghost small">✕</button>
     </div>
     <div class="modal-body" id="archivedList"></div>
+  </div>
+</div>
+
+<div id="nameProjectModal" class="modal hidden">
+  <div class="modal-box small">
+    <div class="modal-head">
+      <h2>Name this project</h2>
+      <button id="npmCloseBtn" class="btn ghost small">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="npm-label">Folder</div>
+      <div class="npm-path" id="npmPath"></div>
+      <div class="npm-label">Project name</div>
+      <input id="npmInput" placeholder="e.g. Quant Neeti 1" maxlength="60">
+      <div class="form-actions">
+        <button id="npmCancelBtn" class="btn ghost">Cancel</button>
+        <button id="npmSaveBtn" class="btn primary">Create project</button>
+      </div>
+    </div>
   </div>
 </div>
 

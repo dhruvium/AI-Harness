@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import shutil
+import threading
 import time
 import uuid
 
@@ -12,13 +13,35 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .adapters import build_request, stream_upstream, complete_upstream, ProviderError
+from .keepawake import keep_awake
 from .models import (
     Provider, ProviderIn, ChatRequest, Conversation, UploadOut,
-    AppSettings, MemoryItem, ArchiveIn,
+    AppSettings, MemoryItem, ArchiveIn, Project, ProjectIn,
 )
 
 app = FastAPI(title="Personal AI Harness")
 config.ensure_dirs()
+if config.load_settings().get("power", {}).get("preventSleep"):
+    keep_awake.enable()
+
+_pick_lock = threading.Lock()
+
+
+def _pick_folder() -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError:
+        raise RuntimeError("Folder picker is not available on this system")
+    with _pick_lock:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            path = filedialog.askdirectory(title="Select the project folder")
+        finally:
+            root.destroy()
+    return path or None
 
 MEMORY_PROMPT_SYSTEM = (
     "You maintain long-term memory for a personal AI assistant. "
@@ -267,7 +290,7 @@ def list_conversations(archived: bool = False):
     return [
         {
             k: c.get(k)
-            for k in ("id", "title", "providerId", "archived", "updatedAt")
+            for k in ("id", "title", "providerId", "projectId", "archived", "updatedAt")
         }
         for c in convs
     ]
@@ -328,9 +351,15 @@ def update_settings(data: AppSettings):
         merged["memory"].update(updates["memory"])
     if "browser" in updates:
         merged["browser"].update(updates["browser"])
+    if "power" in updates:
+        merged["power"].update({k: v for k, v in updates["power"].items() if k in merged["power"]})
     if "ui" in updates:
         merged["ui"].update({k: v for k, v in updates["ui"].items() if k in merged["ui"]})
     config.save_settings(merged)
+    if merged["power"]["preventSleep"]:
+        keep_awake.enable()
+    else:
+        keep_awake.disable()
     return merged
 
 
@@ -357,6 +386,64 @@ def delete_memory(mid: str):
     items = [i for i in config.load_memory() if i["id"] != mid]
     config.save_memory(items)
     return {"ok": True}
+
+
+@app.get("/api/projects")
+def list_projects():
+    return config.load_projects()
+
+
+@app.post("/api/projects", response_model=Project)
+def create_project(data: ProjectIn):
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(422, "project name is empty")
+    projects = config.load_projects()
+    project = {
+        "id": uuid.uuid4().hex[:12],
+        "name": name,
+        "path": data.path or None,
+        "createdAt": time.time(),
+    }
+    projects.append(project)
+    config.save_projects(projects)
+    return project
+
+
+@app.post("/api/pick-folder")
+async def pick_folder():
+    try:
+        path = await asyncio.to_thread(_pick_folder)
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Folder picker failed: {e}")
+    return {"path": path}
+
+
+@app.put("/api/projects/{pid}", response_model=Project)
+def rename_project(pid: str, data: ProjectIn):
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(422, "project name is empty")
+    projects = config.load_projects()
+    for p in projects:
+        if p["id"] == pid:
+            p["name"] = name
+            config.save_projects(projects)
+            return p
+    raise HTTPException(404, "project not found")
+
+
+@app.delete("/api/projects/{pid}")
+def delete_project(pid: str):
+    convs = config.load_conversations()
+    keep = [c for c in convs if c.get("projectId") != pid]
+    removed = len(convs) - len(keep)
+    config.save_conversations(keep)
+    projects = [p for p in config.load_projects() if p["id"] != pid]
+    config.save_projects(projects)
+    return {"ok": True, "deletedChats": removed}
 
 
 def _clear_dir(path: str):
