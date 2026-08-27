@@ -13,6 +13,7 @@ const state = {
   settings: {
     memory: { enabled: false },
     browser: { enabled: false, ignoreCertErrors: false },
+    ui: { lastProviderId: null, effort: "none", systemPrompt: "" },
   },
   settingsSnapshot: null,
 };
@@ -73,6 +74,28 @@ function renderProviderSelect() {
   updateContextMeter();
 }
 
+/* ---------- UI state persistence ---------- */
+
+let uiSaveTimer = null;
+
+function persistUi(immediate = false) {
+  clearTimeout(uiSaveTimer);
+  uiSaveTimer = setTimeout(async () => {
+    try {
+      await api("/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          ui: {
+            lastProviderId: state.providerId,
+            effort: state.effort,
+            systemPrompt: state.system,
+          },
+        }),
+      });
+    } catch {}
+  }, immediate ? 0 : 500);
+}
+
 function currentProvider() {
   return state.providers.find((p) => p.id === state.providerId) || null;
 }
@@ -94,6 +117,7 @@ function conversationText() {
   let sys = state.system ? estimateTokens(state.system) : 0;
   let total = sys;
   for (const m of state.current.messages) {
+    if (m.reasoning) total += estimateTokens(m.reasoning);
     for (const part of m.parts) {
       if (part.type === "text") total += estimateTokens(part.text);
       else if (part.type === "image") total += 1200;
@@ -212,19 +236,104 @@ function renderSessions() {
     const t = document.createElement("span");
     t.className = "title";
     t.textContent = s.title || "Untitled";
+    const dots = document.createElement("button");
+    dots.className = "dots";
+    dots.textContent = "⋮";
+    dots.title = "Session options";
+    const menu = document.createElement("div");
+    menu.className = "ctx-menu hidden";
+    const arch = document.createElement("button");
+    arch.textContent = "Archive";
+    arch.onclick = async (e) => {
+      e.stopPropagation();
+      closeAllMenus();
+      await api(`/api/conversations/${s.id}/archive`, {
+        method: "PATCH",
+        body: JSON.stringify({ archived: true }),
+      });
+      if (state.current && state.current.id === s.id) {
+        state.current = null;
+        renderMessages();
+      }
+      await loadSessions();
+    };
     const del = document.createElement("button");
-    del.className = "del";
-    del.textContent = "✕";
+    del.textContent = "Delete";
+    del.className = "danger";
     del.onclick = async (e) => {
       e.stopPropagation();
+      closeAllMenus();
+      if (!confirm(`Delete chat "${s.title || "Untitled"}" permanently?`)) return;
       await api(`/api/conversations/${s.id}`, { method: "DELETE" });
-      if (state.current && state.current.id === s.id) state.current = null;
+      if (state.current && state.current.id === s.id) {
+        state.current = null;
+        renderMessages();
+      }
       await loadSessions();
-      renderMessages();
     };
-    div.append(t, del);
+    menu.append(arch, del);
+    dots.onclick = (e) => {
+      e.stopPropagation();
+      const wasOpen = !menu.classList.contains("hidden");
+      closeAllMenus();
+      if (!wasOpen) menu.classList.remove("hidden");
+    };
+    div.append(t, dots, menu);
     div.onclick = () => openSession(s.id);
     list.appendChild(div);
+  }
+}
+
+function closeAllMenus() {
+  document.querySelectorAll(".ctx-menu").forEach((m) => m.classList.add("hidden"));
+}
+
+document.addEventListener("click", () => closeAllMenus());
+
+/* ---------- Archived chats ---------- */
+
+async function openArchived() {
+  $("archivedModal").classList.remove("hidden");
+  await renderArchivedList();
+}
+
+async function renderArchivedList() {
+  const items = await api("/api/conversations?archived=true");
+  const list = $("archivedList");
+  list.innerHTML = "";
+  if (!items.length) {
+    list.innerHTML = `<div class="empty-filter">Nothing archived yet.</div>`;
+    return;
+  }
+  for (const s of items) {
+    const row = document.createElement("div");
+    row.className = "archived-row";
+    const info = document.createElement("div");
+    info.className = "info";
+    info.innerHTML = `<div class="name">${esc(s.title || "Untitled")}</div>
+      <div class="meta">${new Date((s.updatedAt || 0) * 1000).toLocaleString()}</div>`;
+    const restore = document.createElement("button");
+    restore.className = "btn ghost small";
+    restore.textContent = "Restore";
+    restore.onclick = async () => {
+      await api(`/api/conversations/${s.id}/archive`, {
+        method: "PATCH",
+        body: JSON.stringify({ archived: false }),
+      });
+      await loadSessions();
+      await renderArchivedList();
+    };
+    const del = document.createElement("button");
+    del.className = "btn ghost small danger";
+    del.textContent = "Delete";
+    del.onclick = async () => {
+      if (!confirm(`Delete archived chat "${s.title || "Untitled"}" permanently?`)) return;
+      await api(`/api/conversations/${s.id}`, { method: "DELETE" });
+      await loadSessions();
+      await renderArchivedList();
+    };
+    row.append(info, restore, del);
+    list.appendChild(row);
   }
 }
 
@@ -240,6 +349,7 @@ async function openSession(id) {
   renderProviderSelect();
   renderSessions();
   renderMessages();
+  persistUi();
 }
 
 async function persistSession() {
@@ -283,7 +393,7 @@ function renderMessages() {
   const box = $("messages");
   box.innerHTML = "";
   if (!state.current) {
-    box.innerHTML = `<div class="empty"><h2>Personal AI Harness</h2><p>Add a provider and start chatting. Shift+Enter for newline.</p></div>`;
+    box.innerHTML = `<div class="empty"><h2>Personal AI Harness</h2><p>Configure a model under Settings → Providers, then start chatting. Shift+Enter for newline.</p></div>`;
     return;
   }
   for (const m of state.current.messages) {
@@ -292,17 +402,77 @@ function renderMessages() {
   box.scrollTop = box.scrollHeight;
 }
 
-function renderMsg(m) {
+function renderMsg(m, live = false) {
   const div = document.createElement("div");
   div.className = `msg ${m.role}`;
   const who = document.createElement("div");
   who.className = "who";
   who.textContent = m.role === "user" ? "you" : "assistant";
+  div.appendChild(who);
+
+  const text = collectText(m.parts);
+  const showThinking =
+    m.role === "assistant" && ((m.reasoning && m.reasoning.length) || (live && !text));
+  let thinkWrap = null;
+  if (showThinking) {
+    thinkWrap = buildThinkingBlock(m, live);
+    div.appendChild(thinkWrap);
+  }
+
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.innerHTML = renderMarkdown(collectText(m.parts));
-  div.append(who, bubble);
+  if (text) {
+    bubble.innerHTML = renderMarkdown(text);
+    div.appendChild(bubble);
+  } else if (!live) {
+    bubble.innerHTML = "<span class='dim-inline'>(empty)</span>";
+    div.appendChild(bubble);
+  } else {
+    bubble.classList.add("hidden");
+    div.appendChild(bubble);
+  }
   return div;
+}
+
+function buildThinkingBlock(m, live) {
+  const wrap = document.createElement("div");
+  wrap.className = "thinking-block";
+  const waiting = live && !(m.reasoning && m.reasoning.length) && !collectText(m.parts);
+  const head = document.createElement("div");
+  head.className = "think-head";
+  const toggle = document.createElement("button");
+  toggle.className = "think-toggle";
+  toggle.textContent = m._open ? "−" : "+";
+  toggle.title = "Show reasoning";
+  const label = document.createElement("span");
+  label.className = "think-label" + (waiting ? " waiting" : "");
+  label.textContent = waiting ? "thinking…" : "Thinking";
+  head.append(toggle, label);
+
+  const pre = document.createElement("pre");
+  pre.className = "reasoning";
+  pre.hidden = !m._open;
+  pre.textContent = m.reasoning || "";
+
+  toggle.onclick = (e) => {
+    e.stopPropagation();
+    m._open = !m._open;
+    pre.hidden = !m._open;
+    toggle.textContent = m._open ? "−" : "+";
+  };
+  wrap.append(head, pre);
+  m._els = { label, pre, toggle, wrap };
+  return wrap;
+}
+
+function refreshThinking(m) {
+  if (!m._els) return;
+  const { label, pre } = m._els;
+  const hasText = !!collectText(m.parts);
+  const waiting = state.streaming && !(m.reasoning && m.reasoning.length) && !hasText;
+  label.textContent = waiting ? "thinking…" : "Thinking";
+  label.classList.toggle("waiting", waiting);
+  pre.textContent = m.reasoning || "";
 }
 
 function collectText(parts) {
@@ -388,7 +558,7 @@ async function send() {
   if (!parts.length) return;
   const provider = currentProvider();
   if (!provider) {
-    alert("Add a provider first (⚙ Providers)");
+    openSettings("providers");
     return;
   }
   if (!state.current) newSession();
@@ -400,10 +570,10 @@ async function send() {
   state.attachments = [];
   renderAttachTray();
 
-  const assistantMsg = { role: "assistant", parts: [{ type: "text", text: "" }] };
+  const assistantMsg = { role: "assistant", parts: [{ type: "text", text: "" }], reasoning: "" };
   state.current.messages.push(assistantMsg);
   const box = $("messages");
-  const div = renderMsg(assistantMsg);
+  const div = renderMsg(assistantMsg, true);
   const bubble = div.querySelector(".bubble");
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
@@ -445,9 +615,14 @@ async function send() {
         const ev = JSON.parse(frame.slice(5).trim());
         if (ev.type === "delta") {
           assistantMsg.parts[0].text += ev.text;
+          bubble.classList.remove("hidden");
           bubble.innerHTML = renderMarkdown(assistantMsg.parts[0].text);
           box.scrollTop = box.scrollHeight;
           updateContextMeter();
+        } else if (ev.type === "reasoning") {
+          assistantMsg.reasoning = (assistantMsg.reasoning || "") + ev.text;
+          refreshThinking(assistantMsg);
+          box.scrollTop = box.scrollHeight;
         } else if (ev.type === "usage") {
           usage = { ...(usage || {}), ...ev };
           delete usage.type;
@@ -466,6 +641,7 @@ async function send() {
   } finally {
     state.streaming = false;
     state.abort = null;
+    refreshThinking(assistantMsg);
     setSendButton();
     if (!assistantMsg.parts[0].text) {
       state.current.messages.pop();
@@ -485,12 +661,32 @@ function stopStreaming() {
   if (state.abort) state.abort.abort();
 }
 
-/* ---------- Provider modal ---------- */
+/* ---------- Settings modal ---------- */
 
-function openModal() {
-  $("providerModal").classList.remove("hidden");
-  renderProviderList();
+function showSettingsTab(tab) {
+  $("generalTab").classList.toggle("hidden", tab !== "general");
+  $("providersTab").classList.toggle("hidden", tab !== "providers");
+  $("tabGeneralBtn").classList.toggle("active", tab === "general");
+  $("tabProvidersBtn").classList.toggle("active", tab === "providers");
 }
+
+function openSettings(tab = "general") {
+  syncSettingsUI();
+  showSettingsTab(tab);
+  if (tab === "providers") renderProviderList();
+  $("settingsModal").classList.remove("hidden");
+}
+
+$("settingsBtn").onclick = () => openSettings("general");
+$("closeSettingsBtn").onclick = () => {
+  $("settingsModal").classList.add("hidden");
+  resetForm();
+};
+$("tabGeneralBtn").onclick = () => showSettingsTab("general");
+$("tabProvidersBtn").onclick = () => {
+  renderProviderList();
+  showSettingsTab("providers");
+};
 
 function renderProviderList() {
   const list = $("providerList");
@@ -548,18 +744,21 @@ $("providerSelect").onchange = (e) => {
   state.providerId = e.target.value || null;
   updateEffortAvail();
   updateContextMeter();
+  persistUi();
 };
-$("effortSelect").onchange = (e) => { state.effort = e.target.value; };
+$("effortSelect").onchange = (e) => {
+  state.effort = e.target.value;
+  persistUi();
+};
 $("sysToggle").onclick = () => $("systemPromptWrap").classList.toggle("hidden");
-$("systemPrompt").addEventListener("input", (e) => { state.system = e.target.value; });
+$("systemPrompt").addEventListener("input", (e) => {
+  state.system = e.target.value;
+  persistUi();
+});
 
-$("newChatBtn").onclick = newSession;
-$("manageProvidersBtn").onclick = openModal;
-$("closeModalBtn").onclick = () => {
-  $("providerModal").classList.add("hidden");
-  resetForm();
-  loadProviders();
-};
+$("newSessionBtn").onclick = newSession;
+$("archivedBtn").onclick = openArchived;
+$("closeArchivedBtn").onclick = () => $("archivedModal").classList.add("hidden");
 
 $("providerForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -669,9 +868,17 @@ $("clearMemoriesBtn").onclick = async () => {
 /* ---------- Init ---------- */
 
 (async function init() {
-  await loadProviders();
   await loadSettings();
+  const ui = state.settings.ui || {};
+  state.providerId = ui.lastProviderId || null;
+  state.effort = ui.effort || "none";
+  state.system = ui.systemPrompt || "";
+  $("effortSelect").value = state.effort;
+  $("systemPrompt").value = state.system;
+
+  await loadProviders();
   await loadSessions();
+
   if (state.sessions.length) {
     await openSession(state.sessions[0].id);
   } else {

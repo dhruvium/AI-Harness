@@ -17,6 +17,7 @@ _lock = threading.Lock()
 DEFAULT_SETTINGS = {
     "memory": {"enabled": False},
     "browser": {"enabled": False, "ignoreCertErrors": False},
+    "ui": {"lastProviderId": None, "effort": "none", "systemPrompt": ""},
 }
 
 
@@ -66,7 +67,7 @@ def save_conversations(convs):
 def load_settings():
     saved = _read_json(SETTINGS_FILE, {})
     merged = json.loads(json.dumps(DEFAULT_SETTINGS))
-    for section in ("memory", "browser"):
+    for section in ("memory", "browser", "ui"):
         if isinstance(saved.get(section), dict):
             merged[section].update({
                 k: v for k, v in saved[section].items() if k in merged[section]

@@ -160,10 +160,15 @@ def _parse_event(obj: dict, provider_format: str):
         etype = obj.get("type")
         if etype == "content_block_delta":
             delta = obj.get("delta", {})
-            if delta.get("type") == "text_delta":
+            dtype = delta.get("type")
+            if dtype == "text_delta":
                 text = delta.get("text", "")
                 if text:
                     yield {"type": "delta", "text": text}
+            elif dtype == "thinking_delta":
+                text = delta.get("thinking", "")
+                if text:
+                    yield {"type": "reasoning", "text": text}
         elif etype == "message_start":
             usage = obj.get("message", {}).get("usage", {}) or {}
             if usage.get("input_tokens") is not None:
@@ -179,6 +184,9 @@ def _parse_event(obj: dict, provider_format: str):
         choices = obj.get("choices") or []
         if choices:
             delta = choices[0].get("delta") or {}
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning:
+                yield {"type": "reasoning", "text": reasoning}
             text = delta.get("content")
             if text:
                 yield {"type": "delta", "text": text}

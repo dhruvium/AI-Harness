@@ -11,12 +11,14 @@
   <aside id="sidebar">
     <div class="side-head">
       <h1>Harness</h1>
-      <button id="newChatBtn" class="btn primary small">+ New chat</button>
+      <div class="side-actions">
+        <button id="newSessionBtn" class="btn primary small">＋ New session</button>
+        <button id="archivedBtn" class="btn ghost small">Archived</button>
+      </div>
     </div>
     <div id="sessionList"></div>
     <div class="side-foot">
-      <button id="manageProvidersBtn" class="btn ghost full">⚙ Providers</button>
-      <button id="settingsBtn" class="btn ghost full" style="margin-top:8px;">⚙ Settings</button>
+      <button id="settingsBtn" class="btn ghost full">⚙ Settings</button>
     </div>
   </aside>
 
@@ -56,47 +58,18 @@
   </main>
 </div>
 
-<div id="providerModal" class="modal hidden">
-  <div class="modal-box">
-    <div class="modal-head">
-      <h2>Providers</h2>
-      <button id="closeModalBtn" class="btn ghost small">✕</button>
-    </div>
-    <div class="modal-body">
-      <div id="providerList"></div>
-      <hr>
-      <h3 id="formTitle">Add provider</h3>
-      <form id="providerForm">
-        <div class="grid2">
-          <label>Name<input name="name" required placeholder="My OpenAI"></label>
-          <label>Model<input name="model" required placeholder="gpt-5"></label>
-          <label class="wide">Base URL<input name="baseUrl" required placeholder="https://api.openai.com/v1"></label>
-          <label class="wide">API key <span class="hint">(blank = keep existing)</span><input name="apiKey" type="password" placeholder="sk-…"></label>
-          <label>Format
-            <select name="format">
-              <option value="openai">OpenAI-compatible</option>
-              <option value="anthropic">Anthropic Messages</option>
-            </select>
-          </label>
-          <label>Context window (tokens)<input name="contextWindow" type="number" min="1000" value="128000"></label>
-          <label class="wide">Max output tokens <span class="hint">(optional)</span><input name="maxTokens" type="number" min="1" placeholder="auto"></label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn primary" id="saveProviderBtn">Save provider</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
 <div id="settingsModal" class="modal hidden">
   <div class="modal-box">
     <div class="modal-head">
       <h2>Settings</h2>
       <button id="closeSettingsBtn" class="btn ghost small">✕</button>
     </div>
+    <div class="modal-tabs">
+      <button id="tabGeneralBtn" class="tab-btn active">General</button>
+      <button id="tabProvidersBtn" class="tab-btn">Providers</button>
+    </div>
     <div class="modal-body">
-      <section>
+      <section id="generalTab">
         <label class="switch-row">
           <div class="switch-text">
             <div class="switch-title">Memory</div>
@@ -109,9 +82,7 @@
           <div id="memoryList"></div>
           <button id="clearMemoriesBtn" class="btn ghost small danger">Clear all memories</button>
         </details>
-      </section>
-      <hr>
-      <section>
+        <hr>
         <h3>Browser control</h3>
         <label class="switch-row">
           <div class="switch-text">
@@ -132,7 +103,42 @@
           <button id="clearBrowserDataBtn" class="btn ghost small danger">Clear all browser data</button>
         </div>
       </section>
+
+      <section id="providersTab" class="hidden">
+        <div id="providerList"></div>
+        <hr>
+        <h3 id="formTitle">Add provider</h3>
+        <form id="providerForm">
+          <div class="grid2">
+            <label>Name<input name="name" required placeholder="My OpenAI"></label>
+            <label>Model<input name="model" required placeholder="gpt-5"></label>
+            <label class="wide">Base URL<input name="baseUrl" required placeholder="https://api.openai.com/v1"></label>
+            <label class="wide">API key <span class="hint">(blank = keep existing)</span><input name="apiKey" type="password" placeholder="sk-…"></label>
+            <label>Format
+              <select name="format">
+                <option value="openai">OpenAI-compatible</option>
+                <option value="anthropic">Anthropic Messages</option>
+              </select>
+            </label>
+            <label>Context window (tokens)<input name="contextWindow" type="number" min="1000" value="128000"></label>
+            <label class="wide">Max output tokens <span class="hint">(optional)</span><input name="maxTokens" type="number" min="1" placeholder="auto"></label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn primary" id="saveProviderBtn">Save provider</button>
+          </div>
+        </form>
+      </section>
     </div>
+  </div>
+</div>
+
+<div id="archivedModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Archived chats</h2>
+      <button id="closeArchivedBtn" class="btn ghost small">✕</button>
+    </div>
+    <div class="modal-body" id="archivedList"></div>
   </div>
 </div>
 

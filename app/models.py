@@ -39,6 +39,7 @@ Part = Union[TextPart, RefPart]
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     parts: List[Part]
+    reasoning: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -58,14 +59,25 @@ class BrowserSettings(BaseModel):
     ignoreCertErrors: bool = False
 
 
+class UiSettings(BaseModel):
+    lastProviderId: Optional[str] = None
+    effort: Literal["none", "low", "medium", "high"] = "none"
+    systemPrompt: str = ""
+
+
 class AppSettings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     browser: BrowserSettings = Field(default_factory=BrowserSettings)
+    ui: UiSettings = Field(default_factory=UiSettings)
 
 
 class MemoryItem(BaseModel):
     id: str
     text: str
+
+
+class ArchiveIn(BaseModel):
+    archived: bool
 
 
 class UploadOut(BaseModel):
@@ -83,5 +95,6 @@ class Conversation(BaseModel):
     effort: str = "none"
     system: str = ""
     useMemory: Optional[bool] = None
+    archived: bool = False
     messages: List[ChatMessage] = []
     updatedAt: float = 0

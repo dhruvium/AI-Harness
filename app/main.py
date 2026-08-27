@@ -14,7 +14,7 @@ from . import config
 from .adapters import build_request, stream_upstream, complete_upstream, ProviderError
 from .models import (
     Provider, ProviderIn, ChatRequest, Conversation, UploadOut,
-    AppSettings, MemoryItem,
+    AppSettings, MemoryItem, ArchiveIn,
 )
 
 app = FastAPI(title="Personal AI Harness")
@@ -184,7 +184,10 @@ async def _extract_memory(provider, user_text: str, assistant_text: str):
             continue
         if line[:200] in existing:
             continue
-        new_items.append({"id": uuid.uuid4().hex[:12], "text": line[:200]})
+        new_items.append({
+            "id": uuid.uuid4().hex[:12],
+            "text": line[:200],
+        })
         existing.add(line[:200])
         if len(new_items) >= 3:
             break
@@ -257,10 +260,17 @@ async def chat(req: ChatRequest):
 
 
 @app.get("/api/conversations")
-def list_conversations():
+def list_conversations(archived: bool = False):
     convs = config.load_conversations()
+    convs = [c for c in convs if bool(c.get("archived")) == archived]
     convs.sort(key=lambda c: c.get("updatedAt", 0), reverse=True)
-    return [{k: c[k] for k in ("id", "title", "providerId", "updatedAt")} for c in convs]
+    return [
+        {
+            k: c.get(k)
+            for k in ("id", "title", "providerId", "archived", "updatedAt")
+        }
+        for c in convs
+    ]
 
 
 @app.get("/api/conversations/{cid}")
@@ -294,6 +304,17 @@ def delete_conversation(cid: str):
     return {"ok": True}
 
 
+@app.patch("/api/conversations/{cid}/archive")
+def archive_conversation(cid: str, body: ArchiveIn):
+    convs = config.load_conversations()
+    for c in convs:
+        if c["id"] == cid:
+            c["archived"] = body.archived
+            config.save_conversations(convs)
+            return {"ok": True, "archived": body.archived}
+    raise HTTPException(404, "conversation not found")
+
+
 @app.get("/api/settings")
 def get_settings():
     return config.load_settings()
@@ -302,9 +323,13 @@ def get_settings():
 @app.put("/api/settings")
 def update_settings(data: AppSettings):
     merged = config.load_settings()
-    merged["memory"]["enabled"] = data.memory.enabled
-    merged["browser"]["enabled"] = data.browser.enabled
-    merged["browser"]["ignoreCertErrors"] = data.browser.ignoreCertErrors
+    updates = data.model_dump(exclude_unset=True)
+    if "memory" in updates:
+        merged["memory"].update(updates["memory"])
+    if "browser" in updates:
+        merged["browser"].update(updates["browser"])
+    if "ui" in updates:
+        merged["ui"].update({k: v for k, v in updates["ui"].items() if k in merged["ui"]})
     config.save_settings(merged)
     return merged
 
@@ -317,7 +342,10 @@ def list_memory():
 @app.post("/api/memory", response_model=MemoryItem)
 def add_memory(item: MemoryItem):
     items = config.load_memory()
-    entry = {"id": item.id or uuid.uuid4().hex[:12], "text": item.text.strip()[:200]}
+    entry = {
+        "id": item.id or uuid.uuid4().hex[:12],
+        "text": item.text.strip()[:200],
+    }
     if not entry["text"]:
         raise HTTPException(422, "memory text is empty")
     config.save_memory((items + [entry])[-MEMORY_CAP:])
