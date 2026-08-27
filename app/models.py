@@ -45,7 +45,27 @@ class ChatRequest(BaseModel):
     providerId: str
     system: str = ""
     effort: Literal["none", "low", "medium", "high"] = "none"
+    useMemory: bool = False
     messages: List[ChatMessage]
+
+
+class MemorySettings(BaseModel):
+    enabled: bool = False
+
+
+class BrowserSettings(BaseModel):
+    enabled: bool = False
+    ignoreCertErrors: bool = False
+
+
+class AppSettings(BaseModel):
+    memory: MemorySettings = Field(default_factory=MemorySettings)
+    browser: BrowserSettings = Field(default_factory=BrowserSettings)
+
+
+class MemoryItem(BaseModel):
+    id: str
+    text: str
 
 
 class UploadOut(BaseModel):
@@ -62,5 +82,6 @@ class Conversation(BaseModel):
     providerId: Optional[str] = None
     effort: str = "none"
     system: str = ""
+    useMemory: Optional[bool] = None
     messages: List[ChatMessage] = []
     updatedAt: float = 0

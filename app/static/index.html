@@ -16,6 +16,7 @@
     <div id="sessionList"></div>
     <div class="side-foot">
       <button id="manageProvidersBtn" class="btn ghost full">⚙ Providers</button>
+      <button id="settingsBtn" class="btn ghost full" style="margin-top:8px;">⚙ Settings</button>
     </div>
   </aside>
 
@@ -84,6 +85,53 @@
           <button type="submit" class="btn primary" id="saveProviderBtn">Save provider</button>
         </div>
       </form>
+    </div>
+  </div>
+</div>
+
+<div id="settingsModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Settings</h2>
+      <button id="closeSettingsBtn" class="btn ghost small">✕</button>
+    </div>
+    <div class="modal-body">
+      <section>
+        <label class="switch-row">
+          <div class="switch-text">
+            <div class="switch-title">Memory</div>
+            <div class="switch-desc">Save and reuse long-term context in workspaces. Applies to new sessions and may increase model requests and token costs.</div>
+          </div>
+          <input type="checkbox" id="memoryToggle" class="switch">
+        </label>
+        <details id="memoryManage" class="sub-block hidden">
+          <summary>Stored memories (<span id="memoryCount">0</span>)</summary>
+          <div id="memoryList"></div>
+          <button id="clearMemoriesBtn" class="btn ghost small danger">Clear all memories</button>
+        </details>
+      </section>
+      <hr>
+      <section>
+        <h3>Browser control</h3>
+        <label class="switch-row">
+          <div class="switch-text">
+            <div class="switch-title">Enable browser use for tasks</div>
+            <div class="switch-desc">Allow the assistant to use the built-in browser when carrying out your requests.</div>
+          </div>
+          <input type="checkbox" id="browserToggle" class="switch">
+        </label>
+        <label class="switch-row sub-row">
+          <div class="switch-text">
+            <div class="switch-title">Ignore certificate errors <span id="certRestartNote" class="restart-note hidden">Restart required to take effect</span></div>
+            <div class="switch-desc">When enabled, the built-in browser stops verifying HTTPS certificates. Insecure — use only for testing.</div>
+          </div>
+          <input type="checkbox" id="certToggle" class="switch">
+        </label>
+        <div class="btn-row">
+          <button id="clearCacheBtn" class="btn ghost small">Clear built-in browser cache</button>
+          <button id="clearBrowserDataBtn" class="btn ghost small danger">Clear all browser data</button>
+        </div>
+      </section>
     </div>
   </div>
 </div>

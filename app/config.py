@@ -7,12 +7,23 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 PROVIDERS_FILE = os.path.join(DATA_DIR, "providers.json")
 CONVERSATIONS_FILE = os.path.join(DATA_DIR, "conversations.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
+BROWSER_PROFILE_DIR = os.path.join(DATA_DIR, "browser", "profile")
+BROWSER_CACHE_DIR = os.path.join(DATA_DIR, "browser", "cache")
 
 _lock = threading.Lock()
+
+DEFAULT_SETTINGS = {
+    "memory": {"enabled": False},
+    "browser": {"enabled": False, "ignoreCertErrors": False},
+}
 
 
 def ensure_dirs():
     os.makedirs(UPLOADS_DIR, exist_ok=True)
+    os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+    os.makedirs(BROWSER_CACHE_DIR, exist_ok=True)
 
 
 def _read_json(path, default):
@@ -50,3 +61,29 @@ def load_conversations():
 def save_conversations(convs):
     with _lock:
         _write_json(CONVERSATIONS_FILE, convs)
+
+
+def load_settings():
+    saved = _read_json(SETTINGS_FILE, {})
+    merged = json.loads(json.dumps(DEFAULT_SETTINGS))
+    for section in ("memory", "browser"):
+        if isinstance(saved.get(section), dict):
+            merged[section].update({
+                k: v for k, v in saved[section].items() if k in merged[section]
+            })
+    return merged
+
+
+def save_settings(settings):
+    with _lock:
+        _write_json(SETTINGS_FILE, settings)
+
+
+def load_memory():
+    with _lock:
+        return _read_json(MEMORY_FILE, [])
+
+
+def save_memory(items):
+    with _lock:
+        _write_json(MEMORY_FILE, items)

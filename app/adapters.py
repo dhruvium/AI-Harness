@@ -32,6 +32,7 @@ def build_request(
     system: str,
     messages: list,
     effort: str,
+    stream: bool = True,
 ) -> Tuple[str, Dict[str, str], dict]:
     url = _endpoint(provider)
     if provider.format == "anthropic":
@@ -41,18 +42,18 @@ def build_request(
             "Content-Type": "application/json",
             **UNIFY_HEADERS,
         }
-        payload = _anthropic_payload(provider, system, messages, effort)
+        payload = _anthropic_payload(provider, system, messages, effort, stream)
     else:
         headers = {
             "Authorization": f"Bearer {provider.apiKey}",
             "Content-Type": "application/json",
             **UNIFY_HEADERS,
         }
-        payload = _openai_payload(provider, system, messages, effort)
+        payload = _openai_payload(provider, system, messages, effort, stream)
     return url, headers, payload
 
 
-def _anthropic_payload(provider: Provider, system: str, messages: list, effort: str) -> dict:
+def _anthropic_payload(provider: Provider, system: str, messages: list, effort: str, stream: bool) -> dict:
     msgs = []
     for m in messages:
         blocks = []
@@ -76,7 +77,7 @@ def _anthropic_payload(provider: Provider, system: str, messages: list, effort: 
     payload = {
         "model": provider.model,
         "max_tokens": provider.maxTokens or 8192,
-        "stream": True,
+        "stream": stream,
         "messages": msgs,
     }
     if system.strip():
@@ -88,7 +89,7 @@ def _anthropic_payload(provider: Provider, system: str, messages: list, effort: 
     return payload
 
 
-def _openai_payload(provider: Provider, system: str, messages: list, effort: str) -> dict:
+def _openai_payload(provider: Provider, system: str, messages: list, effort: str, stream: bool) -> dict:
     msgs = []
     if system.strip():
         msgs.append({"role": "system", "content": system})
@@ -110,7 +111,7 @@ def _openai_payload(provider: Provider, system: str, messages: list, effort: str
             parts = ([{"type": "text", "text": content}] if content else []) + images
             content = parts
         msgs.append({"role": m["role"], "content": content})
-    payload = {"model": provider.model, "messages": msgs, "stream": True}
+    payload = {"model": provider.model, "messages": msgs, "stream": stream}
     if provider.maxTokens:
         payload["max_tokens"] = provider.maxTokens
     if effort != "none":
@@ -188,3 +189,18 @@ def _parse_event(obj: dict, provider_format: str):
                 "input": usage.get("prompt_tokens", 0),
                 "output": usage.get("completion_tokens", 0),
             }
+
+
+async def complete_upstream(url: str, headers: dict, payload: dict, provider_format: str) -> str:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code != 200:
+            raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+        obj = resp.json()
+        if provider_format == "anthropic":
+            blocks = obj.get("content") or []
+            return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        try:
+            return obj["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError):
+            return ""

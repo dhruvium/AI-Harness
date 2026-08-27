@@ -165,6 +165,49 @@ hr { border: 0; border-top: 1px solid var(--border); }
 .hint { font-weight: 400; opacity: .7; }
 .form-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
 
+/* Settings modal */
+.modal-body h3 { font-size: 14px; }
+.switch-row {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 8px 0; cursor: pointer;
+}
+.switch-row.sub-row { padding-left: 18px; }
+.switch-text { flex: 1; }
+.switch-title { font-weight: 600; color: var(--text); }
+.switch-desc { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.restart-note {
+  font-size: 11px; font-weight: 500; color: var(--amber);
+  border: 1px solid var(--amber); border-radius: 6px;
+  padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+}
+
+input.switch {
+  appearance: none; -webkit-appearance: none;
+  width: 40px; height: 22px; min-width: 40px;
+  background: var(--border); border-radius: 11px;
+  position: relative; cursor: pointer; transition: background .15s;
+  margin-top: 2px;
+}
+input.switch::after {
+  content: ""; position: absolute; top: 3px; left: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: left .15s;
+}
+input.switch:checked { background: var(--green); }
+input.switch:checked::after { left: 21px; }
+
+.btn-row { display: flex; gap: 10px; margin-top: 10px; }
+
+.sub-block { margin: 4px 0 0 0; padding: 6px 12px; }
+.sub-block summary { cursor: pointer; color: var(--dim); font-size: 13px; user-select: none; }
+.memory-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; margin-top: 6px; font-size: 13px;
+}
+.memory-item .x { cursor: pointer; color: var(--dim); }
+.memory-item .x:hover { color: var(--red); }
+
 .empty {
   text-align: center; color: var(--dim); margin-top: 18vh;
 }

@@ -10,6 +10,11 @@ const state = {
   attachments: [],
   streaming: false,
   abort: null,
+  settings: {
+    memory: { enabled: false },
+    browser: { enabled: false, ignoreCertErrors: false },
+  },
+  settingsSnapshot: null,
 };
 
 async function api(path, opts = {}) {
@@ -121,6 +126,76 @@ function updateContextMeter(usage) {
   meter.title = `${used.toLocaleString()} of ${p.contextWindow.toLocaleString()} tokens estimated`;
 }
 
+/* ---------- Settings ---------- */
+
+async function loadSettings() {
+  state.settings = await api("/api/settings");
+  state.settingsSnapshot = JSON.parse(JSON.stringify(state.settings));
+}
+
+function syncSettingsUI() {
+  $("memoryToggle").checked = state.settings.memory.enabled;
+  $("browserToggle").checked = state.settings.browser.enabled;
+  $("certToggle").checked = state.settings.browser.ignoreCertErrors;
+  updateCertNote();
+  updateMemoryVisibility();
+}
+
+async function saveSettings() {
+  state.settings.memory.enabled = $("memoryToggle").checked;
+  state.settings.browser.enabled = $("browserToggle").checked;
+  state.settings.browser.ignoreCertErrors = $("certToggle").checked;
+  state.settings = await api("/api/settings", {
+    method: "PUT",
+    body: JSON.stringify({
+      memory: { enabled: state.settings.memory.enabled },
+      browser: {
+        enabled: state.settings.browser.enabled,
+        ignoreCertErrors: state.settings.browser.ignoreCertErrors,
+      },
+    }),
+  });
+  updateCertNote();
+  updateMemoryVisibility();
+}
+
+function updateCertNote() {
+  const changed =
+    state.settings.browser.ignoreCertErrors !==
+    (state.settingsSnapshot
+      ? state.settingsSnapshot.browser.ignoreCertErrors
+      : false);
+  $("certRestartNote").classList.toggle("hidden", !changed);
+}
+
+function updateMemoryVisibility() {
+  const on = state.settings.memory.enabled;
+  $("memoryManage").classList.toggle("hidden", !on);
+  if (on) loadMemoryList();
+}
+
+async function loadMemoryList() {
+  const items = await api("/api/memory");
+  $("memoryCount").textContent = items.length;
+  const list = $("memoryList");
+  list.innerHTML = "";
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "memory-item";
+    row.textContent = item.text;
+    const x = document.createElement("span");
+    x.className = "x";
+    x.textContent = "✕";
+    x.onclick = async () => {
+      await api(`/api/memory/${item.id}`, { method: "DELETE" });
+      loadMemoryList();
+    };
+    row.appendChild(x);
+    list.appendChild(row);
+  }
+  $("memoryCount").textContent = items.length;
+}
+
 /* ---------- Sessions ---------- */
 
 async function loadSessions() {
@@ -169,9 +244,12 @@ async function openSession(id) {
 
 async function persistSession() {
   if (!state.current) return;
-  state.current.system = state.system;
   state.current.effort = state.effort;
   state.current.providerId = state.providerId;
+  state.current.system = state.system;
+  if (state.current.useMemory === null || state.current.useMemory === undefined) {
+    state.current.useMemory = false;
+  }
   if (state.current.messages.length && !state.current.title) {
     const first = state.current.messages[0].parts.find((p) => p.type === "text");
     state.current.title = (first ? first.text : "chat").slice(0, 40);
@@ -190,6 +268,7 @@ function newSession() {
     providerId: state.providerId,
     effort: state.effort,
     system: state.system,
+    useMemory: !!state.settings.memory.enabled,
     messages: [],
     updatedAt: 0,
   };
@@ -342,6 +421,7 @@ async function send() {
         providerId: state.providerId,
         system: state.system,
         effort: state.effort,
+        useMemory: !!state.current.useMemory,
         messages: state.current.messages.slice(0, -1),
       }),
       signal: state.abort.signal,
@@ -545,10 +625,52 @@ window.addEventListener("drop", (e) => {
   if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]);
 });
 
+/* ---------- Settings modal ---------- */
+
+function openSettings() {
+  syncSettingsUI();
+  $("settingsModal").classList.remove("hidden");
+  if (state.settings.memory.enabled) loadMemoryList();
+}
+
+$("settingsBtn").onclick = openSettings;
+$("closeSettingsBtn").onclick = () => {
+  $("settingsModal").classList.add("hidden");
+};
+
+$("memoryToggle").onchange = saveSettings;
+$("browserToggle").onchange = () => {
+  saveSettings();
+};
+$("certToggle").onchange = saveSettings;
+
+$("clearCacheBtn").onclick = async () => {
+  const r = await fetch("/api/browser/clear-cache", { method: "POST" });
+  const out = await r.json();
+  alert(`Browser cache cleared (${out.removed} item${out.removed === 1 ? "" : "s"}).`);
+};
+
+$("clearBrowserDataBtn").onclick = async () => {
+  if (!confirm("Clear ALL built-in browser data (profile, cookies, cache)?")) return;
+  const r = await fetch("/api/browser/clear-data", { method: "POST" });
+  const out = await r.json();
+  alert(`All browser data cleared (${out.removed} item${out.removed === 1 ? "" : "s"}).`);
+};
+
+$("clearMemoriesBtn").onclick = async () => {
+  if (!confirm("Delete all stored memories?")) return;
+  const items = await api("/api/memory");
+  for (const i of items) {
+    await api(`/api/memory/${i.id}`, { method: "DELETE" });
+  }
+  loadMemoryList();
+};
+
 /* ---------- Init ---------- */
 
 (async function init() {
   await loadProviders();
+  await loadSettings();
   await loadSessions();
   if (state.sessions.length) {
     await openSession(state.sessions[0].id);
