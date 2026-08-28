@@ -223,6 +223,37 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent); }
   max-height: 320px; overflow-y: auto;
   font-family: Consolas, "Cascadia Mono", monospace;
 }
+
+.tools-wrap { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.tool-block {
+  border: 1px solid var(--border); border-left: 2px solid var(--amber);
+  border-radius: 8px; background: #0a0c0f; padding: 6px 10px;
+}
+.tool-block.ok { border-left-color: var(--green); }
+.tool-block.fail { border-left-color: var(--red); }
+.tool-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tool-name { font-size: 12px; font-weight: 600; color: var(--text); flex: none; }
+.tool-sum {
+  flex: 1; min-width: 0; font-size: 11px; color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tool-status { font-size: 11px; flex: none; color: var(--dim); }
+.tool-status.pending { color: var(--amber); }
+.tool-status.running { color: var(--accent); }
+.tool-status.done { color: var(--green); }
+.tool-status.failed { color: var(--red); }
+.tool-actions { display: flex; gap: 8px; margin-top: 6px; }
+.tool-io {
+  margin: 8px 0 2px; padding: 8px 10px; border-top: 1px solid var(--border);
+  color: #9aa2ad; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
+  max-height: 280px; overflow-y: auto;
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+.btn.active {
+  border-color: var(--accent); color: var(--accent);
+  background: rgba(76, 106, 156, .12);
+}
 .msg .bubble pre {
   background: #0d0f13; border: 1px solid var(--border); border-radius: 8px;
   padding: 10px; overflow-x: auto; white-space: pre; margin: 6px 0;

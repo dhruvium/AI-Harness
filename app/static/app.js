@@ -14,6 +14,7 @@ const state = {
   attachments: [],
   streaming: false,
   abort: null,
+  agentMode: false,
   settings: {
     memory: { enabled: false },
     browser: { enabled: false, ignoreCertErrors: false },
@@ -829,6 +830,10 @@ function renderAttachTray() {
 
 /* ---------- Chat ---------- */
 
+function isNearBottom(box) {
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+}
+
 function buildMessageParts() {
   const text = $("input").value.trim();
   const parts = [];
@@ -845,6 +850,12 @@ async function send() {
   if (!parts.length) return;
   if (!state.current) {
     alert("No chat is open. Use ＋ New chat (top of sidebar) or pick a chat inside one of your projects.");
+    return;
+  }
+  const project = state.projects.find((p) => p.id === state.current.projectId);
+  const useAgent = state.agentMode;
+  if (useAgent && (!project || !project.path)) {
+    alert("Agent mode needs the chat's project to have a folder on disk.");
     return;
   }
   const provider = currentProvider();
@@ -875,7 +886,7 @@ async function send() {
   let usage = null;
 
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch(useAgent ? "/api/agent" : "/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -883,6 +894,7 @@ async function send() {
         system: state.system,
         effort: state.effort,
         useMemory: !!state.current.useMemory,
+        projectId: useAgent ? state.current.projectId : null,
         messages: state.current.messages.slice(0, -1),
       }),
       signal: state.abort.signal,
@@ -905,15 +917,31 @@ async function send() {
         if (!frame.startsWith("data:")) continue;
         const ev = JSON.parse(frame.slice(5).trim());
         if (ev.type === "delta") {
+          const stick = isNearBottom(box);
           assistantMsg.parts[0].text += ev.text;
           bubble.classList.remove("hidden");
           bubble.innerHTML = renderMarkdown(assistantMsg.parts[0].text);
-          box.scrollTop = box.scrollHeight;
+          if (stick) box.scrollTop = box.scrollHeight;
           updateContextMeter();
         } else if (ev.type === "reasoning") {
+          const stick = isNearBottom(box);
           assistantMsg.reasoning = (assistantMsg.reasoning || "") + ev.text;
           refreshThinking(assistantMsg);
-          box.scrollTop = box.scrollHeight;
+          if (stick) box.scrollTop = box.scrollHeight;
+        } else if (ev.type === "tool_call") {
+          const stick = isNearBottom(box);
+          addToolBlock(div, ev);
+          if (stick) box.scrollTop = box.scrollHeight;
+        } else if (ev.type === "approval_request") {
+          const stick = isNearBottom(box);
+          attachApproval(div, ev);
+          if (stick) box.scrollTop = box.scrollHeight;
+        } else if (ev.type === "tool_running") {
+          setToolStatus(div, ev.id, "running…", "running");
+        } else if (ev.type === "tool_result") {
+          const stick = isNearBottom(box);
+          setToolResult(div, ev);
+          if (stick) box.scrollTop = box.scrollHeight;
         } else if (ev.type === "usage") {
           usage = { ...(usage || {}), ...ev };
           delete usage.type;
@@ -950,6 +978,111 @@ function setSendButton() {
 
 function stopStreaming() {
   if (state.abort) state.abort.abort();
+}
+
+/* ---------- Agent tool blocks ---------- */
+
+function toolBlock(div, callId) {
+  return div.querySelector(`.tool-block[data-call-id="${CSS.escape(callId)}"]`);
+}
+
+function addToolBlock(div, ev) {
+  let wrap = div.querySelector(".tools-wrap");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.className = "tools-wrap";
+    const bubble = div.querySelector(".bubble");
+    div.insertBefore(wrap, bubble);
+  }
+  const block = document.createElement("div");
+  block.className = "tool-block";
+  block.dataset.callId = ev.id;
+  const head = document.createElement("div");
+  head.className = "tool-head";
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = "🔧 " + ev.tool;
+  const sum = document.createElement("span");
+  sum.className = "tool-sum";
+  sum.textContent = ev.summary || "";
+  sum.title = ev.summary || "";
+  const status = document.createElement("span");
+  status.className = "tool-status";
+  status.textContent = "requested";
+  const toggle = document.createElement("button");
+  toggle.className = "think-toggle";
+  toggle.textContent = "+";
+  toggle.title = "Show details";
+  const pre = document.createElement("pre");
+  pre.className = "tool-io";
+  pre.hidden = true;
+  pre.textContent = ev.args && Object.keys(ev.args).length ? JSON.stringify(ev.args, null, 2) : "";
+  toggle.onclick = (e) => {
+    e.stopPropagation();
+    pre.hidden = !pre.hidden;
+    toggle.textContent = pre.hidden ? "+" : "−";
+  };
+  head.append(name, sum, status, toggle);
+  const actions = document.createElement("div");
+  actions.className = "tool-actions";
+  block.append(head, actions, pre);
+  wrap.appendChild(block);
+  return block;
+}
+
+function attachApproval(div, ev) {
+  const block = toolBlock(div, ev.callId);
+  if (!block) return;
+  const status = block.querySelector(".tool-status");
+  status.textContent = "awaiting approval";
+  status.className = "tool-status pending";
+  const actions = block.querySelector(".tool-actions");
+  actions.innerHTML = "";
+  const ok = document.createElement("button");
+  ok.className = "btn small primary";
+  ok.textContent = "Approve";
+  const no = document.createElement("button");
+  no.className = "btn small ghost";
+  no.textContent = "Deny";
+  const decide = async (approved) => {
+    ok.disabled = true;
+    no.disabled = true;
+    status.textContent = approved ? "running…" : "denied";
+    status.className = "tool-status " + (approved ? "running" : "failed");
+    try {
+      await fetch("/api/agent/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ streamId: ev.streamId, callId: ev.callId, approved }),
+      });
+    } catch {}
+  };
+  ok.onclick = () => decide(true);
+  no.onclick = () => decide(false);
+  actions.append(ok, no);
+}
+
+function setToolStatus(div, callId, text, cls) {
+  const block = toolBlock(div, callId);
+  if (!block) return;
+  const status = block.querySelector(".tool-status");
+  status.textContent = text;
+  status.className = "tool-status " + cls;
+}
+
+function setToolResult(div, ev) {
+  const block = toolBlock(div, ev.id);
+  if (!block) return;
+  const status = block.querySelector(".tool-status");
+  status.textContent = ev.ok ? "done" : "failed";
+  status.className = "tool-status " + (ev.ok ? "done" : "failed");
+  const actions = block.querySelector(".tool-actions");
+  actions.innerHTML = "";
+  const pre = block.querySelector(".tool-io");
+  const args = pre.textContent ? pre.textContent + "\n\n——— result ———\n" : "";
+  pre.textContent = args + (ev.result || "");
+  if (ev.ok) block.classList.add("ok");
+  else block.classList.add("fail");
 }
 
 /* ---------- Settings modal ---------- */
@@ -1086,6 +1219,10 @@ $("providerForm").onsubmit = async (e) => {
 };
 
 $("attachBtn").onclick = () => $("fileInput").click();
+$("agentToggle").onclick = () => {
+  state.agentMode = !state.agentMode;
+  $("agentToggle").classList.toggle("active", state.agentMode);
+};
 $("fileInput").onchange = (e) => {
   uploadFiles([...e.target.files]);
   e.target.value = "";

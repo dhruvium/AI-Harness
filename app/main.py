@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -14,9 +15,10 @@ from fastapi.staticfiles import StaticFiles
 from . import config
 from .adapters import build_request, stream_upstream, complete_upstream, ProviderError
 from .keepawake import keep_awake
+from .tools import execute_tool, tool_specs, ToolError, args_summary, COMMAND_TIMEOUT
 from .models import (
     Provider, ProviderIn, ChatRequest, Conversation, UploadOut,
-    AppSettings, MemoryItem, ArchiveIn, Project, ProjectIn,
+    AppSettings, MemoryItem, ArchiveIn, Project, ProjectIn, ApprovalIn,
 )
 
 app = FastAPI(title="Personal AI Harness")
@@ -52,6 +54,19 @@ MEMORY_PROMPT_SYSTEM = (
 )
 MEMORY_CAP = 200
 EXTRACT_MIN_CHARS = 60
+
+AGENT_SYSTEM_EXTRA = (
+    "\n\n## Agent mode\n"
+    "You have tools that act on the user's project folder: write_file, read_file, "
+    "list_dir, run_command. Paths are relative to the project folder. "
+    "Use the tools to actually perform tasks. After each tool use, check the result "
+    "before continuing. Never claim an action was completed unless a tool result "
+    "confirms it."
+)
+MAX_AGENT_TURNS = 15
+APPROVAL_TIMEOUT = 300
+
+_pending_approvals: dict = {}
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -218,14 +233,12 @@ async def _extract_memory(provider, user_text: str, assistant_text: str):
         config.save_memory((config.load_memory() + new_items)[-MEMORY_CAP:])
 
 
-@app.post("/api/chat")
-async def chat(req: ChatRequest):
+def _prepare(req: ChatRequest):
     providers = config.load_providers()
     provider = next((p for p in providers if p["id"] == req.providerId), None)
     if not provider:
         raise HTTPException(404, "provider not found")
     provider = Provider(**provider)
-
     expanded = []
     for m in req.messages:
         parts = []
@@ -235,6 +248,16 @@ async def chat(req: ChatRequest):
             else:
                 parts.append(_resolve_ref(p.uploadId))
         expanded.append({"role": m.role, "parts": parts})
+    system = req.system
+    if req.useMemory and config.load_settings()["memory"]["enabled"]:
+        system += _memory_block()
+    user_text = _last_user_text(expanded)
+    return provider, expanded, system, user_text
+
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    provider, expanded, system, user_text = _prepare(req)
 
     system = req.system
     if req.useMemory and config.load_settings()["memory"]["enabled"]:
@@ -473,6 +496,133 @@ def browser_clear_cache():
 def browser_clear_data():
     removed = _clear_dir(config.BROWSER_PROFILE_DIR) + _clear_dir(config.BROWSER_CACHE_DIR)
     return {"ok": True, "removed": removed}
+
+
+@app.post("/api/agent/approve")
+def agent_approve(body: ApprovalIn):
+    entry = _pending_approvals.get(body.streamId, {}).get(body.callId)
+    if not entry:
+        raise HTTPException(404, "no pending tool call with that id")
+    entry["approved"] = body.approved
+    entry["event"].set()
+    return {"ok": True}
+
+
+@app.post("/api/agent")
+async def agent(req: ChatRequest):
+    provider, expanded, system, _ = _prepare(req)
+    project = next(
+        (p for p in config.load_projects() if p["id"] == req.projectId), None
+    )
+    root = project.get("path") if project else None
+    if not root or not os.path.isdir(root):
+        raise HTTPException(422, "Agent mode needs a project with a valid folder")
+    system += AGENT_SYSTEM_EXTRA
+    specs = tool_specs(provider.format)
+    stream_id = uuid.uuid4().hex[:12]
+
+    async def gen():
+        internal = list(expanded)
+        yield f"data: {json.dumps({'type': 'start', 'streamId': stream_id})}\n\n"
+        try:
+            for turn in range(MAX_AGENT_TURNS):
+                url, headers, payload = build_request(
+                    provider, system, internal, req.effort, stream=True, tools=specs
+                )
+                queue: asyncio.Queue = asyncio.Queue()
+
+                async def pump():
+                    try:
+                        async for ev in stream_upstream(url, headers, payload, provider.format):
+                            await queue.put(ev)
+                    except Exception as e:
+                        await queue.put({"type": "error", "message": str(e)})
+                    finally:
+                        await queue.put(None)
+
+                task = asyncio.create_task(pump())
+                text_acc = []
+                tool_acc = {}
+                failed = False
+                while True:
+                    ev = await queue.get()
+                    if ev is None:
+                        break
+                    t = ev.get("type")
+                    if t == "delta":
+                        text_acc.append(ev["text"])
+                    elif t == "tool_delta":
+                        idx = ev["index"]
+                        slot = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if ev.get("id"):
+                            slot["id"] = ev["id"]
+                        if ev.get("name"):
+                            slot["name"] = ev["name"]
+                        if ev.get("argsDelta"):
+                            slot["arguments"] += ev["argsDelta"]
+                    elif t == "tool_start":
+                        slot = tool_acc.setdefault(ev["index"], {"id": "", "name": "", "arguments": ""})
+                        slot["id"] = ev.get("id", "")
+                        slot["name"] = ev.get("name", "")
+                    elif t == "tool_args_delta":
+                        slot = tool_acc.setdefault(ev["index"], {"id": "", "name": "", "arguments": ""})
+                        slot["arguments"] += ev.get("delta", "")
+                    elif t == "error":
+                        yield f"data: {json.dumps(ev)}\n\n"
+                        failed = True
+                        break
+                    else:
+                        yield f"data: {json.dumps(ev)}\n\n"
+                task.cancel()
+                if failed:
+                    return
+                calls = [c for c in tool_acc.values() if c["name"]]
+                if not calls:
+                    break
+                internal.append({
+                    "role": "assistant",
+                    "text": "".join(text_acc) or None,
+                    "toolCalls": calls,
+                })
+                for c in calls:
+                    call_id = c["id"] or uuid.uuid4().hex[:8]
+                    try:
+                        args = json.loads(c["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    yield f"data: {json.dumps({'type': 'tool_call', 'id': call_id, 'tool': c['name'], 'args': args, 'summary': args_summary(c['name'], args)})}\n\n"
+
+                    entry = {"event": asyncio.Event(), "approved": None}
+                    _pending_approvals.setdefault(stream_id, {})[call_id] = entry
+                    yield f"data: {json.dumps({'type': 'approval_request', 'streamId': stream_id, 'callId': call_id, 'tool': c['name'], 'args': args, 'summary': args_summary(c['name'], args)})}\n\n"
+                    try:
+                        await asyncio.wait_for(entry["event"].wait(), timeout=APPROVAL_TIMEOUT)
+                        approved = entry["approved"] is True
+                    except asyncio.TimeoutError:
+                        approved = False
+                    _pending_approvals.get(stream_id, {}).pop(call_id, None)
+
+                    if approved:
+                        yield f"data: {json.dumps({'type': 'tool_running', 'id': call_id})}\n\n"
+                        try:
+                            result = await asyncio.to_thread(execute_tool, root, c["name"], args)
+                            ok = True
+                        except ToolError as e:
+                            result, ok = f"ERROR: {e}", False
+                        except subprocess.TimeoutExpired:
+                            result, ok = f"ERROR: command timed out after {COMMAND_TIMEOUT}s", False
+                        except Exception as e:
+                            result, ok = f"ERROR: {e}", False
+                    else:
+                        result, ok = "DENIED: the user rejected this action.", False
+                    yield f"data: {json.dumps({'type': 'tool_result', 'id': call_id, 'ok': ok, 'result': result})}\n\n"
+                    internal.append({"role": "tool", "toolCallId": call_id, "content": result})
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        finally:
+            _pending_approvals.pop(stream_id, None)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/")

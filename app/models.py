@@ -47,6 +47,7 @@ class ChatRequest(BaseModel):
     system: str = ""
     effort: Literal["none", "low", "medium", "high"] = "none"
     useMemory: bool = False
+    projectId: Optional[str] = None
     messages: List[ChatMessage]
 
 
@@ -83,6 +84,12 @@ class MemoryItem(BaseModel):
 
 class ArchiveIn(BaseModel):
     archived: bool
+
+
+class ApprovalIn(BaseModel):
+    streamId: str
+    callId: str
+    approved: bool
 
 
 class UploadOut(BaseModel):

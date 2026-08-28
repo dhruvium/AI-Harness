@@ -33,6 +33,7 @@ def build_request(
     messages: list,
     effort: str,
     stream: bool = True,
+    tools: list | None = None,
 ) -> Tuple[str, Dict[str, str], dict]:
     url = _endpoint(provider)
     if provider.format == "anthropic":
@@ -42,44 +43,60 @@ def build_request(
             "Content-Type": "application/json",
             **UNIFY_HEADERS,
         }
-        payload = _anthropic_payload(provider, system, messages, effort, stream)
+        payload = _anthropic_payload(provider, system, messages, effort, stream, tools)
     else:
         headers = {
             "Authorization": f"Bearer {provider.apiKey}",
             "Content-Type": "application/json",
             **UNIFY_HEADERS,
         }
-        payload = _openai_payload(provider, system, messages, effort, stream)
+        payload = _openai_payload(provider, system, messages, effort, stream, tools)
     return url, headers, payload
 
 
-def _anthropic_payload(provider: Provider, system: str, messages: list, effort: str, stream: bool) -> dict:
+def _anthropic_payload(provider: Provider, system: str, messages: list, effort: str, stream: bool, tools: list | None = None) -> dict:
     msgs = []
     for m in messages:
+        role = m["role"]
+        if role == "tool":
+            _append_anthropic_tool_results(msgs, m)
+            continue
         blocks = []
-        for p in m["parts"]:
-            if p["type"] == "text":
-                if p["text"].strip():
-                    blocks.append({"type": "text", "text": p["text"]})
-            elif p["type"] == "image":
-                blocks.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": p["media_type"], "data": p["data"]},
-                })
-            elif p["type"] == "pdf":
-                blocks.append({
-                    "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf", "data": p["data"]},
-                })
+        if role == "assistant" and m.get("toolCalls"):
+            if m.get("text"):
+                blocks.append({"type": "text", "text": m["text"]})
+            for tc in m["toolCalls"]:
+                try:
+                    args = json.loads(tc["arguments"]) if tc.get("arguments") else {}
+                except json.JSONDecodeError:
+                    args = {}
+                blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": args})
+        else:
+            for p in m["parts"]:
+                if p["type"] == "text":
+                    if p["text"].strip():
+                        blocks.append({"type": "text", "text": p["text"]})
+                elif p["type"] == "image":
+                    blocks.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": p["media_type"], "data": p["data"]},
+                    })
+                elif p["type"] == "pdf":
+                    blocks.append({
+                        "type": "document",
+                        "source": {"type": "base64", "media_type": "application/pdf", "data": p["data"]},
+                    })
         if not blocks:
             blocks = [{"type": "text", "text": "(empty)"}]
-        msgs.append({"role": m["role"], "content": blocks})
+        msgs.append({"role": role, "content": blocks})
     payload = {
         "model": provider.model,
         "max_tokens": provider.maxTokens or 8192,
         "stream": stream,
         "messages": msgs,
     }
+    if tools:
+        payload["tools"] = tools
     if system.strip():
         payload["system"] = system
     if effort != "none":
@@ -89,11 +106,46 @@ def _anthropic_payload(provider: Provider, system: str, messages: list, effort: 
     return payload
 
 
-def _openai_payload(provider: Provider, system: str, messages: list, effort: str, stream: bool) -> dict:
+def _append_anthropic_tool_results(msgs: list, m: dict):
+    block = {
+        "type": "tool_result",
+        "tool_use_id": m["toolCallId"],
+        "content": m.get("content", ""),
+    }
+    if msgs and msgs[-1]["role"] == "user" and any(
+        b.get("type") == "tool_result" for b in msgs[-1]["content"]
+    ):
+        msgs[-1]["content"].append(block)
+    else:
+        msgs.append({"role": "user", "content": [block]})
+
+
+def _openai_payload(provider: Provider, system: str, messages: list, effort: str, stream: bool, tools: list | None = None) -> dict:
     msgs = []
     if system.strip():
         msgs.append({"role": "system", "content": system})
     for m in messages:
+        if m["role"] == "tool":
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": m["toolCallId"],
+                "content": m.get("content", ""),
+            })
+            continue
+        if m["role"] == "assistant" and m.get("toolCalls"):
+            msgs.append({
+                "role": "assistant",
+                "content": m.get("text") or None,
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc.get("arguments") or "{}"},
+                    }
+                    for tc in m["toolCalls"]
+                ],
+            })
+            continue
         texts = []
         images = []
         for p in m["parts"]:
@@ -112,6 +164,8 @@ def _openai_payload(provider: Provider, system: str, messages: list, effort: str
             content = parts
         msgs.append({"role": m["role"], "content": content})
     payload = {"model": provider.model, "messages": msgs, "stream": stream}
+    if tools:
+        payload["tools"] = tools
     if provider.maxTokens:
         payload["max_tokens"] = provider.maxTokens
     if effort != "none":
@@ -169,6 +223,19 @@ def _parse_event(obj: dict, provider_format: str):
                 text = delta.get("thinking", "")
                 if text:
                     yield {"type": "reasoning", "text": text}
+            elif dtype == "input_json_delta":
+                partial = delta.get("partial_json", "")
+                if partial:
+                    yield {"type": "tool_args_delta", "index": obj.get("index", 0), "delta": partial}
+        elif etype == "content_block_start":
+            cb = obj.get("content_block") or {}
+            if cb.get("type") == "tool_use":
+                yield {
+                    "type": "tool_start",
+                    "index": obj.get("index", 0),
+                    "id": cb.get("id", ""),
+                    "name": cb.get("name", ""),
+                }
         elif etype == "message_start":
             usage = obj.get("message", {}).get("usage", {}) or {}
             if usage.get("input_tokens") is not None:
@@ -187,6 +254,16 @@ def _parse_event(obj: dict, provider_format: str):
             reasoning = delta.get("reasoning_content") or delta.get("reasoning")
             if reasoning:
                 yield {"type": "reasoning", "text": reasoning}
+            for tc in delta.get("tool_calls") or []:
+                ev = {"type": "tool_delta", "index": tc.get("index", 0)}
+                if tc.get("id"):
+                    ev["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    ev["name"] = fn["name"]
+                if fn.get("arguments"):
+                    ev["argsDelta"] = fn["arguments"]
+                yield ev
             text = delta.get("content")
             if text:
                 yield {"type": "delta", "text": text}
